@@ -40,7 +40,7 @@ class DexQuoteAdapter {
     if (token0Hex.length < 66 || token1Hex.length < 66) throw new Error(`Invalid token metadata from ${chain}`);
 
     const sqrtPriceX96 = BigInt(`0x${slot0Hex.slice(2, 66)}`);
-    const tickRaw = BigInt(`0x${slot0Hex.slice(66, 130)`);
+    const tickRaw = BigInt(`0x${slot0Hex.slice(66, 130)}`);
     const tick = Number(tickRaw >= (1n << 255n) ? tickRaw - (1n << 256n) : tickRaw);
     const token0 = `0x${token0Hex.slice(-40)}`.toLowerCase();
     const token1 = `0x${token1Hex.slice(-40)}`.toLowerCase();
