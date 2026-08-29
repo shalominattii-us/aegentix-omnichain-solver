@@ -1,0 +1,38 @@
+name: AEGENTIX Solver Tests
+
+on:
+  push:
+    branches:
+      - feat/public-dex-fastapi
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run complete test suite
+        run: npm test
+      - name: Run syntax checks
+        run: |
+          node --check src/dexQuoteAdapter.js
+          node --check src/dexArbWorker.js
+          node --check orchestrator.js
