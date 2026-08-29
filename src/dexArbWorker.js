@@ -17,7 +17,7 @@ class DexArbWorker {
   start() {
     if (this.running) return;
     this.running = true;
-    console.log(`[DEX-ARB] Starting exact DEX quote worker (paper execution, quote size=${this.quoteUsdc} USDC)`);
+    console.log(`[DEX-ARB] Starting net-aware DEX quote worker (paper execution, quote size=${this.quoteUsdc} USDC)`);
     this.timer = setInterval(() => this.tick(), this.pollIntervalMs);
     this.tick();
   }
@@ -32,10 +32,14 @@ class DexArbWorker {
   async tick() {
     try {
       const roundTrip = await this.quoteAdapter.quoteRoundTrip({ amountUsdc: this.quoteUsdc });
-      const grossBps = roundTrip.grossBps;
+      const netBps = roundTrip.netBps;
       const volumeUsdc = Math.min(Number(this.quoteUsdc), this.maxFillUsdc);
 
-      console.log(`[DEX-ARB] EXACT quote in=${roundTrip.amountUsdc} out=${roundTrip.finalUsdc} gross=${grossBps.toFixed(2)} bps delta=${roundTrip.grossDeltaUsdc} USDC`);
+      console.log(
+        `[DEX-ARB] NET quote in=${roundTrip.amountUsdc} out=${roundTrip.finalUsdc}` +
+        ` gross=${roundTrip.grossBps.toFixed(2)}bps costs=${roundTrip.totalCostUsdc.toFixed(6)} USDC` +
+        ` net=${netBps.toFixed(2)}bps`,
+      );
 
       await this.redis.xAdd('dex:arb:quotes', '*',
         'mode', 'paper',
@@ -43,13 +47,23 @@ class DexArbWorker {
         'amountUsdc', roundTrip.amountUsdc,
         'finalUsdc', roundTrip.finalUsdc,
         'grossDeltaUsdc', roundTrip.grossDeltaUsdc,
-        'grossBps', String(grossBps),
+        'grossBps', String(roundTrip.grossBps),
         'arbAmountOutWeth', roundTrip.buy.amountOut,
+        'baseAmountOutUsdc', roundTrip.sell.amountOut,
         'arbGasEstimate', roundTrip.buy.gasEstimate,
         'baseGasEstimate', roundTrip.sell.gasEstimate,
+        'arbGasPriceWei', roundTrip.arbGasPriceWei,
+        'baseGasPriceWei', roundTrip.baseGasPriceWei,
+        'arbGasUsdc', String(roundTrip.arbGasUsdc),
+        'baseGasUsdc', String(roundTrip.baseGasUsdc),
+        'gasCostUsdc', String(roundTrip.gasCostUsdc),
+        'rebalanceBufferUsdc', String(roundTrip.rebalanceBufferUsdc),
+        'totalCostUsdc', String(roundTrip.totalCostUsdc),
+        'netDeltaUsdc', String(roundTrip.netDeltaUsdc),
+        'netBps', String(netBps),
         'quotedAt', String(roundTrip.quotedAt));
 
-      if (grossBps <= this.minNetProfitBps) return;
+      if (netBps <= this.minNetProfitBps) return;
 
       const arbUsdc = await this.inventory.getAvailable('arbitrum', 'USDC');
       const baseWeth = await this.inventory.getAvailable('base', 'WETH');
@@ -59,13 +73,16 @@ class DexArbWorker {
         return;
       }
 
-      console.log(`[DEX-ARB] PAPER EXEC edge=${grossBps.toFixed(2)} bps vol=${volumeUsdc} USDC buy@arbitrum sell@base`);
+      console.log(`[DEX-ARB] PAPER EXEC net=${netBps.toFixed(2)} bps vol=${volumeUsdc} USDC buy@arbitrum sell@base`);
       await this.redis.xAdd('dex:arb:executions', '*',
         'mode', 'paper',
-        'edgeBps', String(grossBps),
+        'edgeBps', String(netBps),
+        'grossBps', String(roundTrip.grossBps),
         'volumeUsdc', String(volumeUsdc),
         'arbAmountOutWeth', roundTrip.buy.amountOut,
         'baseAmountOutUsdc', roundTrip.sell.amountOut,
+        'totalCostUsdc', String(roundTrip.totalCostUsdc),
+        'netDeltaUsdc', String(roundTrip.netDeltaUsdc),
         'arbGasEstimate', roundTrip.buy.gasEstimate,
         'baseGasEstimate', roundTrip.sell.gasEstimate);
 
@@ -79,7 +96,7 @@ class DexArbWorker {
         destChain: 'base',
         token: 'WETH',
         amount: wethNeeded,
-        reason: 'dex-arb-exact-quote',
+        reason: 'dex-arb-exact-quote-net',
       }));
     } catch (err) {
       console.error('[DEX-ARB][ERROR]', err.message);
