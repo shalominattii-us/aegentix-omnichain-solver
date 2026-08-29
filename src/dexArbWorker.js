@@ -7,6 +7,7 @@ class DexArbWorker {
     this.minNetProfitBps = minNetProfitBps;
     this.maxFillUsdc = maxFillUsdc;
     this.pollIntervalMs = parseInt(process.env.DEX_ARB_POLL_MS || '2000', 10);
+    this.quoteUsdc = process.env.DEX_ARB_QUOTE_USDC || '1000';
     this.timer = null;
     this.running = false;
     this.quoteAdapter = quoteAdapter;
@@ -16,7 +17,7 @@ class DexArbWorker {
   start() {
     if (this.running) return;
     this.running = true;
-    console.log('[DEX-ARB] Starting real DEX quote worker (execution remains paper)');
+    console.log(`[DEX-ARB] Starting exact DEX quote worker (paper execution, quote size=${this.quoteUsdc} USDC)`);
     this.timer = setInterval(() => this.tick(), this.pollIntervalMs);
     this.tick();
   }
@@ -30,51 +31,59 @@ class DexArbWorker {
 
   async tick() {
     try {
-      const [arbQuote, baseQuote] = await Promise.all([
-        this.quoteAdapter.quote('arbitrum', 'WETH'),
-        this.quoteAdapter.quote('base', 'WETH'),
-      ]);
-      const arbPrice = arbQuote.price;
-      const basePrice = baseQuote.price;
-      if (!Number.isFinite(arbPrice) || !Number.isFinite(basePrice) || arbPrice <= 0 || basePrice <= 0) return;
+      const roundTrip = await this.quoteAdapter.quoteRoundTrip({ amountUsdc: this.quoteUsdc });
+      const grossBps = roundTrip.grossBps;
+      const volumeUsdc = Math.min(Number(this.quoteUsdc), this.maxFillUsdc);
 
-      const diffPct = ((basePrice - arbPrice) / arbPrice) * 100;
-      const effectiveBps = diffPct * 100;
+      console.log(`[DEX-ARB] EXACT quote in=${roundTrip.amountUsdc} out=${roundTrip.finalUsdc} gross=${grossBps.toFixed(2)} bps delta=${roundTrip.grossDeltaUsdc} USDC`);
 
-      if (effectiveBps <= this.minNetProfitBps) {
-        console.log(`[DEX-ARB] No edge: arb=${arbPrice.toFixed(4)} base=${basePrice.toFixed(4)} edge=${effectiveBps.toFixed(2)} bps`);
+      await this.redis.xAdd('dex:arb:quotes', '*',
+        'mode', 'paper',
+        'source', roundTrip.source,
+        'amountUsdc', roundTrip.amountUsdc,
+        'finalUsdc', roundTrip.finalUsdc,
+        'grossDeltaUsdc', roundTrip.grossDeltaUsdc,
+        'grossBps', String(grossBps),
+        'arbAmountOutWeth', roundTrip.buy.amountOut,
+        'arbGasEstimate', roundTrip.buy.gasEstimate,
+        'baseGasEstimate', roundTrip.sell.gasEstimate,
+        'quotedAt', String(roundTrip.quotedAt));
+
+      if (grossBps <= this.minNetProfitBps) return;
+
+      const arbUsdc = await this.inventory.getAvailable('arbitrum', 'USDC');
+      const baseWeth = await this.inventory.getAvailable('base', 'WETH');
+      const wethNeeded = Number(roundTrip.buy.amountOut) / 1e18;
+      if (arbUsdc < volumeUsdc || baseWeth < wethNeeded) {
+        console.log('[DEX-ARB] OPPORTUNITY BLOCKED: insufficient inventory for quoted route');
         return;
       }
 
-      const volumeUsdc = this.pickVolume(effectiveBps);
-      const arbInventory = await this.inventory.getAvailable('arbitrum', 'WETH');
-      const baseInventory = await this.inventory.getAvailable('base', 'USDC');
-      if (arbInventory * arbPrice < volumeUsdc || baseInventory < volumeUsdc) {
-        console.log('[DEX-ARB] SKIP: insufficient inventory for spatial arb');
-        return;
-      }
-
-      console.log(`[DEX-ARB] PAPER EXEC edge=${effectiveBps.toFixed(2)} bps vol=${volumeUsdc} buy@arbitrum sell@base`);
+      console.log(`[DEX-ARB] PAPER EXEC edge=${grossBps.toFixed(2)} bps vol=${volumeUsdc} USDC buy@arbitrum sell@base`);
       await this.redis.xAdd('dex:arb:executions', '*',
-        'mode', 'paper', 'edgeBps', String(effectiveBps.toFixed(2)),
-        'volumeUsdc', String(volumeUsdc), 'arbPrice', String(arbPrice), 'basePrice', String(basePrice),
-        'arbBlockTimestampLast', String(arbQuote.blockTimestampLast), 'baseBlockTimestampLast', String(baseQuote.blockTimestampLast));
+        'mode', 'paper',
+        'edgeBps', String(grossBps),
+        'volumeUsdc', String(volumeUsdc),
+        'arbAmountOutWeth', roundTrip.buy.amountOut,
+        'baseAmountOutUsdc', roundTrip.sell.amountOut,
+        'arbGasEstimate', roundTrip.buy.gasEstimate,
+        'baseGasEstimate', roundTrip.sell.gasEstimate);
 
       await this.inventory.reserve('arbitrum', 'USDC', volumeUsdc);
-      await this.inventory.reserve('base', 'WETH', volumeUsdc / basePrice);
-      await this.swaps.executeBuy('arbitrum', 'WETH', volumeUsdc / arbPrice, 'solver-wallet');
-      await this.swaps.executeSell('base', 'WETH', volumeUsdc / basePrice, 'solver-wallet');
+      await this.inventory.reserve('base', 'WETH', wethNeeded);
+      await this.swaps.executeBuy('arbitrum', 'WETH', wethNeeded, 'solver-wallet');
+      await this.swaps.executeSell('base', 'WETH', wethNeeded, 'solver-wallet');
 
-      await this.redis.lPush('rebalance:queue', JSON.stringify({ srcChain: 'arbitrum', destChain: 'base', token: 'WETH', amount: volumeUsdc / arbPrice }));
+      await this.redis.lPush('rebalance:queue', JSON.stringify({
+        srcChain: 'arbitrum',
+        destChain: 'base',
+        token: 'WETH',
+        amount: wethNeeded,
+        reason: 'dex-arb-exact-quote',
+      }));
     } catch (err) {
       console.error('[DEX-ARB][ERROR]', err.message);
     }
-  }
-
-  pickVolume(edgeBps) {
-    const maxUsdc = this.maxFillUsdc;
-    const scale = Math.min(1, edgeBps / 20);
-    return Number((maxUsdc * scale).toFixed(2));
   }
 }
 
