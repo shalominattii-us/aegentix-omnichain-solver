@@ -105,10 +105,10 @@ class DexQuoteAdapter {
     // conservative estimate, not a live router eth_estimateGas result.
     const arbGas = Number(BigInt(buy.gasEstimate) * arbGasPriceWei) / 1e18;
     const baseGas = Number(BigInt(sell.gasEstimate) * baseGasPriceWei) / 1e18;
-    const arbWeth = Number(BigInt(buy.amountOut)) / 1e18;
-    const baseWeth = arbWeth;
-    const arbWethUsdc = Number(inputUsdc) / 1e6 / arbWeth;
-    const baseWethUsdc = Number(finalUsdc) / 1e6 / baseWeth;
+    const arbWethAmount = Number(BigInt(buy.amountOut)) / 1e18;
+    const baseWethAmount = arbWethAmount;
+    const arbWethUsdc = Number(inputUsdc) / 1e6 / arbWethAmount;
+    const baseWethUsdc = Number(finalUsdc) / 1e6 / baseWethAmount;
     const arbGasUsdc = arbGas * arbWethUsdc * this.gasSafetyMultiplier;
     const baseGasUsdc = baseGas * baseWethUsdc * this.gasSafetyMultiplier;
     const gasCostUsdc = arbGasUsdc + baseGasUsdc;
