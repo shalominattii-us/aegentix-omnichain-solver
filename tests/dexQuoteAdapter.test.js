@@ -21,8 +21,8 @@ test('quoteRoundTrip computes net profit after gas and rebalance buffer', async 
 
   const result = await adapter.quoteRoundTrip({ amountUsdc: '1000' });
 
-  assert.equal(result.finalUsdc, '1005');
-  assert.equal(result.grossDeltaUsdc, '5');
+  assert.equal(result.finalUsdc, '1005.0');
+  assert.equal(result.grossDeltaUsdc, '5.0');
   assert.ok(result.grossBps > 49);
   assert.ok(result.gasCostUsdc > 0);
   assert.equal(result.rebalanceBufferUsdc, 0.5);
